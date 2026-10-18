@@ -10,8 +10,8 @@ from urllib.parse import quote
 import gspread
 from google.oauth2.service_account import Credentials
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.filters import Command, CommandStart
+from aiogram.types import BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, MenuButtonCommands, Message, ReplyKeyboardMarkup
 
 from store import EVENT_HEADERS, LEAD_HEADERS, USER_HEADERS, Store
 
@@ -22,7 +22,8 @@ SALES_OFFICE_URL = "https://maps.app.goo.gl/7Je9qDcMVQQQ9VDL7"
 ASSETS = Path(__file__).parent / "assets"
 START_BUTTON = "▶️ СТАРТ"
 BACK = "🏠 Головне меню"
-MENU = ["🏙 ЖК GOLDEN CITY", "🤝 Співпраця зі мною", "👤 Про мене", "📱 Мої соцмережі", "💬 Залишити звернення", "📋 Мої заявки"]
+MENU = ["🏙 ЖК GOLDEN CITY", "🤝 Співпраця зі мною", "👤 Про мене", "📱 Мої соцмережі", "💬 Залишити звернення"]
+ADMIN_MENU = "📋 Мої заявки"
 CATEGORIES = ["📹 Реклама та інтеграції", "🎬 Співпраця з блогерами", "🎓 Воркшопи та навчання", "🏢 Співпраця з бізнесом"]
 SEND = "✅ Надіслати заявку"
 CHAT = "Telegram"
@@ -35,13 +36,15 @@ PROJECTS = {
         "menu_photo": "golden_567.png",
         "visual_photo": "golden_567_1.png",
         "video": "golden_567.mp4",
-        "description": "🏙 <b>GOLDEN CITY — 5, 6, 7 секції</b>\n\nСучасний житловий квартал в Одесі із закритою територією, індивідуальним опаленням, резервним живленням та укриттям на кожному поверсі.\n\nДоступні квартири-студії, 1-, 2- та 3-кімнатні квартири. Розтермінування — до 40 місяців, перший внесок — від 10%.",
+        "presentation_url": "https://budsmart.od.ua/wp-content/uploads/2026/08/07-2026-albom-Golden-syty-3-4-ochered_compressed.pdf",
+        "description": "🏙 <b>GOLDEN CITY — 5, 6, 7 секції</b>\n\nСучасний житловий квартал в Одесі із закритою територією, індивідуальним опаленням, резервним живленням та укриттям на кожному поверсі.\n\nДоступні квартири-студії, 1-, 2- та 3-кімнатні квартири. Розтермінування — до 54 місяців, перший внесок — від 10%.",
     },
     "paliia": {
         "name": "GOLDEN CITY на Семена Палія",
         "menu_photo": "golden_paliia.png",
         "visual_photo": "golden_paliia_1.png",
         "video": "golden_paliia.mp4",
+        "presentation_url": "https://budsmart.od.ua/wp-content/uploads/2026/10/Golden-City-new-albom-1-3-sektsyy_compressed.pdf",
         "description": "🏙 <b>GOLDEN CITY на Семена Палія</b>\n\nНовий житловий проєкт в Одесі із сучасною архітектурою та продуманою територією.\n\nДоступні квартири-студії, 1- та 2-кімнатні квартири. Розтермінування — до 54 місяців, перший внесок — від 10%.",
     },
 }
@@ -74,7 +77,11 @@ def reply_keyboard(items, add_home=True, contact=False):
     rows = [[KeyboardButton(text=item, request_contact=contact and item == SHARE)] for item in items]
     if add_home and BACK not in items:
         rows.append([KeyboardButton(text=BACK)])
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
+
+
+def main_menu_items(uid):
+    return MENU + ([ADMIN_MENU] if uid == ADMIN else [])
 
 
 def url_keyboard(items):
@@ -88,7 +95,11 @@ def manager_link(question):
 def project_actions(project_id, include_visual=True):
     rows = []
     if include_visual:
-        rows.append([InlineKeyboardButton(text="▶️ Подивитися візуалізацію", callback_data=f"video:{project_id}")])
+        presentation_url = PROJECTS[project_id].get("presentation_url")
+        if presentation_url:
+            rows.append([InlineKeyboardButton(text="⭐️ ПРЕЗЕНТАЦІЯ ТА ПЛАНУВАННЯ", url=presentation_url)])
+        else:
+            rows.append([InlineKeyboardButton(text="▶️ Подивитися візуалізацію", callback_data=f"video:{project_id}")])
     rows.extend([
         [InlineKeyboardButton(text="📅 Записатися на консультацію", callback_data=f"consult:{project_id}")],
         [InlineKeyboardButton(text="📍 ВІДДІЛ ПРОДАЖУ", url=SALES_OFFICE_URL)],
@@ -197,7 +208,10 @@ async def show_welcome(message):
 
 
 async def show_main_menu(message):
-    await message.answer("Оберіть потрібний розділ 👇", reply_markup=reply_keyboard(MENU, add_home=False))
+    await message.answer(
+        "Оберіть потрібний розділ 👇",
+        reply_markup=reply_keyboard(main_menu_items(message.from_user.id), add_home=False),
+    )
 
 
 async def show_projects(message):
@@ -236,6 +250,18 @@ async def start(message: Message):
     store.touch_user(message.from_user, source, "Запуск бота", increment_start=True)
     store.add_event(message.from_user, source, "Запуск бота")
     await show_welcome(message)
+
+
+@dp.message(Command("menu"))
+async def menu_command(message: Message):
+    if message.chat.type != "private" or message.from_user is None:
+        return
+    data = store.session(message.from_user.id)
+    source = data.get("source", SOURCE_NAMES["direct"])
+    store.put_session(message.from_user.id, {"step": "menu", "source": source})
+    store.touch_user(message.from_user, source, "Головне меню")
+    store.add_event(message.from_user, source, "Відкрив меню", "Команда /menu")
+    await show_main_menu(message)
 
 
 @dp.callback_query(F.data.startswith("project:"))
@@ -375,10 +401,13 @@ async def handle(message: Message):
         store.add_event(message.from_user, source, "Почав звернення")
         data = {"step": "message", "source": source, "name": message.from_user.full_name, "username": message.from_user.username or "", "form_id": str(uuid.uuid4()), "category": "Загальне звернення"}
         await ask(message, data, "message", "Напишіть ваше питання або пропозицію (до 1500 символів).")
-    elif text == MENU[5]:
+    elif text == ADMIN_MENU and uid == ADMIN:
         rows = store.mine(uid)
         result = "\n\n".join(f"{row[1]} · {row[7]}\nID: {row[0]}\nСтатус: {row[17]}" for row in rows)
-        await message.answer(result or "Ви ще не надсилали звернень.", reply_markup=reply_keyboard(MENU, add_home=False))
+        await message.answer(
+            result or "Ви ще не надсилали звернень.",
+            reply_markup=reply_keyboard(main_menu_items(uid), add_home=False),
+        )
     elif step == "message" and text and len(text) <= 1500:
         data["message"] = text
         await ask(message, data, "contact", "Як вам зручніше отримати відповідь?", [CHAT, PHONE])
@@ -399,7 +428,10 @@ async def handle(message: Message):
         store.put_session(uid, {"step": "menu", "source": data.get("source", SOURCE_NAMES["direct"])})
         store.touch_user(message.from_user, source, "Надіслав звернення")
         store.add_event(message.from_user, source, "Надіслав звернення", "Загальне звернення")
-        await message.answer(f"✅ Ваше звернення прийнято.\n\nНомер: {lead_id}", reply_markup=reply_keyboard(MENU, add_home=False))
+        await message.answer(
+            f"✅ Ваше звернення прийнято.\n\nНомер: {lead_id}",
+            reply_markup=reply_keyboard(main_menu_items(uid), add_home=False),
+        )
     else:
         await message.answer("Натисніть «СТАРТ» або оберіть потрібний розділ.", reply_markup=reply_keyboard([START_BUTTON], add_home=False))
 
@@ -414,6 +446,11 @@ async def main():
     folder.mkdir(parents=True, exist_ok=True)
     store = Store(folder / "bot.sqlite3")
     bot = Bot(token)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Запустити бота"),
+        BotCommand(command="menu", description="Відкрити головне меню"),
+    ])
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     await bot.delete_webhook(drop_pending_updates=False)
     worker = asyncio.create_task(deliver(bot))
     try:
